@@ -1002,3 +1002,84 @@ class AptTests(TestCase):
             ['apt-get', '--assume-yes', 'autoremove'],
             False
         )
+
+    @patch('subprocess.check_output')
+    def test_dpkg_list(self, check_output):
+        check_output.return_value = (
+            'Desired=Unknown/Install/Remove/Purge/Hold\n'
+            '| Status=Not/Inst/Conf-files/Unpacked/halF-conf/Half-inst/'
+            'trig-aWait/Trig-pend\n'
+            '|/ Err?=(none)/Reinst-required (Status,Err: uppercase=bad)\n'
+            '||/ Name           Version            Architecture Description\n'
+            '+++-=============================-==================-===========-'
+            '=================================\n'
+            'ii  dpkg                          1.19.0.5ubuntu2.1  amd64       '
+            'Debian package management system\n'
+            'rc  linux-image-4.15.0-42-generic 4.15.0-42.45       amd64       '
+            'Signed kernel image generic\n'
+            'ii  lsof                          4.91+dfsg-1ubuntu1 amd64       '
+            'utility to list open files\n')
+        self.assertEquals(
+            fetch.dpkg_list(['package']),
+            {
+                'dpkg': {
+                    'name': 'dpkg',
+                    'version': '1.19.0.5ubuntu2.1',
+                    'architecture': 'amd64',
+                    'description': 'Debian package management system'
+                },
+                'lsof': {
+                    'name': 'lsof',
+                    'version': '4.91+dfsg-1ubuntu1',
+                    'architecture': 'amd64',
+                    'description': 'utility to list open files'
+                },
+            })
+        check_output.side_effect = subprocess.CalledProcessError(1, '')
+        self.assertEquals(fetch.dpkg_list('package'), {})
+        check_output.side_effect = subprocess.CalledProcessError(2, '')
+        self.assertRaises(subprocess.CalledProcessError,
+                          fetch.dpkg_list, 'package')
+
+    @patch('subprocess.check_output')
+    def test_apt_cache_show(self, check_output):
+        check_output.return_value = (
+            'Package: dpkg\n'
+            'Version: 1.19.0.5ubuntu2.1\n'
+            'Bugs: https://bugs.launchpad.net/ubuntu/+filebug\n'
+            'Description-en: Debian package management system\n'
+            ' Multiline description\n'
+            '\n'
+            'Package: lsof\n'
+            'Architecture: amd64\n'
+            'Version: 4.91+dfsg-1ubuntu1\n'
+            '\n'
+            'N: There is 1 additional record.\n')
+        self.assertEquals(
+            fetch.apt_cache_show(['package']),
+            {'dpkg': {
+                'package': 'dpkg', 'version': '1.19.0.5ubuntu2.1',
+                'bugs': 'https://bugs.launchpad.net/ubuntu/+filebug',
+                'description-en': 'Debian package management system\n'
+                                  'Multiline description'},
+             'lsof': {
+                 'package': 'lsof', 'architecture': 'amd64',
+                 'version': '4.91+dfsg-1ubuntu1'},
+             })
+        check_output.assert_called_once_with(
+            ['apt-cache', 'show', '--no-all-versions', 'package'],
+            stderr=subprocess.STDOUT,
+            universal_newlines=True)
+
+    @patch('subprocess.check_call')
+    def test_version_compare(self, check_call):
+        self.assertTrue(fetch.version_compare('2', '1'))
+        check_call.assert_called_once_with(
+            ['dpkg', '--compare-versions', '2', 'gt', '1'],
+            stderr=subprocess.STDOUT,
+            universal_newlines=True)
+        check_call.side_effect = subprocess.CalledProcessError(1, '', '')
+        self.assertFalse(fetch.version_compare('2', '2'))
+        check_call.side_effect = subprocess.CalledProcessError(2, '', '')
+        self.assertRaises(subprocess.CalledProcessError,
+                          fetch.version_compare, '2', '2')
