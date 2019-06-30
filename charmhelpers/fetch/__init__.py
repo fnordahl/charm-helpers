@@ -93,7 +93,6 @@ add_source = fetch.add_source
 
 if __platform__ == "ubuntu":
     apt_cache = fetch.apt_cache
-    apt_cache_show = fetch.apt_cache_show
     apt_install = fetch.apt_install
     apt_update = fetch.apt_update
     apt_upgrade = fetch.apt_upgrade
@@ -102,10 +101,8 @@ if __platform__ == "ubuntu":
     apt_mark = fetch.apt_mark
     apt_hold = fetch.apt_hold
     apt_unhold = fetch.apt_unhold
-    dpkg_list = fetch.dpkg_list
     import_key = fetch.import_key
     get_upstream_version = fetch.get_upstream_version
-    upstream_version = fetch.upstream_version
 elif __platform__ == "centos":
     yum_search = fetch.yum_search
 

@@ -190,173 +190,209 @@ CMD_RETRY_DELAY = 10  # Wait 10 seconds between command retries.
 CMD_RETRY_COUNT = 3  # Retry a failing fatal command X times.
 
 
-def dpkg_list(packages):
-    """Get data from system dpkg database for package.
+class apt_pkg(object):
+    """Provide a subset of the ``python-apt`` module API.
 
-    Note that one of the main purposes for this function is to avoid dependency
-    on the ``python-apt`` package.
+    Data collection is done through subprocess calls to ``apt-cache`` and
+    ``dpkg-query`` commands.
 
-    The indicated package is a wrapper around the ``apt`` C++ library which is
-    tightly connected to the version of the distribution it is shipped on.
-    This in turn makes it incredibly hard to distribute as a wheel for a charm
-    that supports a large span of distro versions.
+    The main purpose for this class is to avoid dependency on the
+    ``python-apt`` python module.
 
-    :param packages: Packages to get data from
-    :type packages: list[str]
-    :returns: Structured data about installed packages, keys like
-              ``dpkg-query --list``
-    :rtype: dict
-    :raises: subprocess.CalledProcessError
+    The indicated python module is a wrapper around the ``apt`` C++ library
+    which is tightly connected to the version of the distribution it was
+    shipped on.  It is not developed in a backward/forward compatible manner.
+
+    This in turn makes it incredibly hard to distribute as a wheel for a piece
+    of python software that supports a span of distro releases [0][1].
+
+    Upstream feedback like [2] does not give confidence in this ever changing,
+    so with this we get rid of the dependency.
+
+    0: https://github.com/juju-solutions/layer-basic/pull/135
+    1: https://bugs.launchpad.net/charm-octavia/+bug/1824112
+    2: https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=845330#10
     """
-    pkgs = {}
-    cmd = ['dpkg-query', '--list']
-    cmd.extend(packages)
-    if locale.getlocale() == (None, None):
-        # subprocess calls out to locale.getpreferredencoding(False) to
-        # determine encoding.  Workaround for Trusty where the
-        # environment appears to not be set up correctly.
-        locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
-    try:
-        output = subprocess.check_output(cmd,
-                                         stderr=subprocess.STDOUT,
-                                         universal_newlines=True)
-        headings = []
-        for line in output.splitlines():
-            if line.startswith('||/'):
-                headings = line.split()
-                headings.pop(0)
-                continue
-            elif (line.startswith('|') or line.startswith('+') or
-                  line.startswith('dpkg-query:')):
-                continue
-            data = line.split(None, 4)
-            status = data.pop(0)
-            if status != 'ii':
-                continue
-            pkg = {}
-            for kv in zip(headings, data):
-                pkg.update({kv[0].lower(): kv[1]})
-            if 'name' in pkg:
-                pkgs.update({pkg['name']: pkg})
-    except subprocess.CalledProcessError as cp:
-        # ``dpkg-query`` may return error and at the same time have produced
-        # useful output, for example when asked for multiple packages where
-        # some are not installed
-        if cp.returncode != 1:
-            raise
-    return pkgs
+    class Package(object):
+        """Simple container for package attributes."""
+        def __init__(self, attr_map):
+            """Initialize package attribute container.
 
+            :param attr_map: Dictionary key value pairs to transform into
+                             attributes with a value on instance of the class.
+            :type attr_map: Dict[str, str]
+            """
+            for k, v in attr_map:
+                setattr(self, k, v)
 
-def apt_cache_show(packages):
-    """Get data from system apt cache for package.
+    class Cache(object):
+        """Simulation of ``apt_pkg`` Cache object."""
+        def __init__(self, progress=None):
+            pass
 
-    Note that one of the main purposes for this function is to avoid dependency
-    on the ``python-apt`` package.
+        def __getitem__(self, package):
+            """Get information about a package from apt and dpkg databases.
 
-    The indicated package is a wrapper around the ``apt`` C++ library which is
-    tightly connected to the version of the distribution it is shipped on.
-    This in turn makes it incredibly hard to distribute as a wheel for a charm
-    that supports a large span of distro versions.
+            :param package: Name of package
+            :type package: str
+            :returns: Package object
+            :rtype: object
+            :raises: KeyError, subprocess.CalledProcessError
+            """
+            pkg = self.Package(self._apt_cache_show([package])[package])
+            pkg.current_ver = self._dpkg_list(
+                [package]).get(package, {}).get('version')
+            return pkg
 
-    :param packages: Packages to get data from
-    :type packages: list[str]
-    :returns: Structured data about package, keys like ``apt-cache show``
-    :rtype: dict
-    :raises: subprocess.CalledProcessError
-    """
-    pkgs = {}
-    cmd = ['apt-cache', 'show', '--no-all-versions']
-    cmd.extend(packages)
-    if locale.getlocale() == (None, None):
-        # subprocess calls out to locale.getpreferredencoding(False) to
-        # determine encoding.  Workaround for Trusty where the
-        # environment appears to not be set up correctly.
-        locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
-    try:
-        output = subprocess.check_output(cmd,
-                                         stderr=subprocess.STDOUT,
-                                         universal_newlines=True)
-        previous = None
-        pkg = {}
-        for line in output.splitlines():
-            if not line:
-                if 'package' in pkg:
-                    pkgs.update({pkg['package']: pkg})
-                    pkg = {}
-                continue
-            if line.startswith(' '):
-                if previous and previous in pkg:
-                    pkg[previous] += os.linesep + line.lstrip()
-                continue
-            if ':' in line:
-                kv = line.split(':', 1)
-                key = kv[0].lower()
-                if key == 'n':
+        def _dpkg_list(packages):
+            """Get data from system dpkg database for package.
+
+            :param packages: Packages to get data from
+            :type packages: List[str]
+            :returns: Structured data about installed packages, keys like
+                      ``dpkg-query --list``
+            :rtype: dict
+            :raises: subprocess.CalledProcessError
+            """
+            pkgs = {}
+            cmd = ['dpkg-query', '--list']
+            cmd.extend(packages)
+            if locale.getlocale() == (None, None):
+                # subprocess calls out to locale.getpreferredencoding(False) to
+                # determine encoding.  Workaround for Trusty where the
+                # environment appears to not be set up correctly.
+                locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
+            try:
+                output = subprocess.check_output(cmd,
+                                                 stderr=subprocess.STDOUT,
+                                                 universal_newlines=True)
+            except subprocess.CalledProcessError as cp:
+                # ``dpkg-query`` may return error and at the same time have
+                # produced useful output, for example when asked for multiple
+                # packages where some are not installed
+                if cp.returncode != 1:
+                    raise
+                output = cp.output
+            headings = []
+            for line in output.splitlines():
+                if line.startswith('||/'):
+                    headings = line.split()
+                    headings.pop(0)
                     continue
-                previous = key
-                pkg.update({key: kv[1].lstrip()})
-    except subprocess.CalledProcessError as cp:
-        # ``apt-cache`` returns 100 if none of the packages asked for exist in
-        # the apt cache.
-        if cp.returncode != 100:
-            raise
-    return pkgs
+                elif (line.startswith('|') or line.startswith('+') or
+                      line.startswith('dpkg-query:')):
+                    continue
+                data = line.split(None, 4)
+                status = data.pop(0)
+                if status != 'ii':
+                    continue
+                pkg = {}
+                for kv in zip(headings, data):
+                    pkg.update({kv[0].lower(): kv[1]})
+                if 'name' in pkg:
+                    pkgs.update({pkg['name']: pkg})
+            return pkgs
 
+        def _apt_cache_show(packages):
+            """Get data from system apt cache for package.
 
-def upstream_version(version):
-    """Extracts upstream version from a version string.
+            :param packages: Packages to get data from
+            :type packages: List[str]
+            :returns: Structured data about package, keys like
+                      ``apt-cache show``
+            :rtype: dict
+            :raises: subprocess.CalledProcessError
+            """
+            pkgs = {}
+            cmd = ['apt-cache', 'show', '--no-all-versions']
+            cmd.extend(packages)
+            if locale.getlocale() == (None, None):
+                # subprocess calls out to locale.getpreferredencoding(False) to
+                # determine encoding.  Workaround for Trusty where the
+                # environment appears to not be set up correctly.
+                locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
+            try:
+                output = subprocess.check_output(cmd,
+                                                 stderr=subprocess.STDOUT,
+                                                 universal_newlines=True)
+                previous = None
+                pkg = {}
+                for line in output.splitlines():
+                    if not line:
+                        if 'package' in pkg:
+                            pkgs.update({pkg['package']: pkg})
+                            pkg = {}
+                        continue
+                    if line.startswith(' '):
+                        if previous and previous in pkg:
+                            pkg[previous] += os.linesep + line.lstrip()
+                        continue
+                    if ':' in line:
+                        kv = line.split(':', 1)
+                        key = kv[0].lower()
+                        if key == 'n':
+                            continue
+                        previous = key
+                        pkg.update({key: kv[1].lstrip()})
+            except subprocess.CalledProcessError as cp:
+                # ``apt-cache`` returns 100 if none of the packages asked for
+                # exist in the apt cache.
+                if cp.returncode != 100:
+                    raise
+            return pkgs
 
-    Note that one of the main purposes for this function is to avoid dependency
-    on the ``python-apt`` package.
+    def upstream_version(version):
+        """Extracts upstream version from a version string.
 
-    The indicated package is a wrapper around the ``apt`` C++ library which is
-    tightly connected to the version of the distribution it is shipped on.
-    This in turn makes it incredibly hard to distribute as a wheel for a charm
-    that supports a large span of distro versions.
+        Upstream reference: https://salsa.debian.org/apt-team/apt/blob/master/
+                                    apt-pkg/deb/debversion.cc#L259
 
-    :param version: Version string
-    :type version: str
-    :returns: Upstream version
-    :rtype: str
+        :param version: Version string
+        :type version: str
+        :returns: Upstream version
+        :rtype: str
+        """
+        if version:
+            version = version[version.find(':') + 1:]
+            if '-' in version:
+                version = version[:version.find('-')]
+        return version
 
-    Upstream reference: https://salsa.debian.org/apt-team/apt/blob/master/
-                                apt-pkg/deb/debversion.cc#L259
-    """
-    if version:
-        version = version[version.find(':') + 1:]
-        if '-' in version:
-            version = version[:version.find('-')]
-    return version
+    def version_compare(a, b):
+        """Compare the given versions.
 
+        Call out to ``dpkg`` to make sure the code doing the comparison is
+        compatible with what the ``apt`` library would do.  Mimic the return
+        values.
 
-def version_compare(candidate, current):
-    """Compare the given versions.
+        Upstream reference:
+        https://apt-team.pages.debian.net/python-apt/library/apt_pkg.html
+                ?highlight=version_compare#apt_pkg.version_compare
 
-    Note that one of the main purposes for this function is to avoid dependency
-    on the ``python-apt`` package.
-
-    The indicated package is a wrapper around the ``apt`` C++ library which is
-    tightly connected to the version of the distribution it is shipped on.
-    This in turn makes it incredibly hard to distribute as a wheel for a charm
-    that supports a large span of distro versions.
-
-    :param candidate: version string
-    :type candidate: str
-    :param current: version string
-    :type current: str
-    :returns: False if candidate <= current, True if candidate > current
-    :raises: subprocess.CalledProcessError
-    """
-    try:
-        subprocess.check_call(['dpkg', '--compare-versions', candidate, 'gt',
-                               current],
-                              stderr=subprocess.STDOUT,
-                              universal_newlines=True)
-        return True
-    except subprocess.CalledProcessError as cp:
-        if cp.returncode == 1:
-            return False
-        raise
+        :param a: version string
+        :type a: str
+        :param b: version string
+        :type b: str
+        :returns: >0 if ``a`` is greater than ``b``, 0 if a equals b,
+                  <0 if ``a`` is smaller than ``b``
+        :rtype: int
+        :raises: subprocess.CalledProcessError, RuntimeError
+        """
+        for op in ('gt', 1), ('eq', 0), ('lt', -1):
+            try:
+                subprocess.check_call(['dpkg', '--compare-versions',
+                                       a, op[0], b],
+                                      stderr=subprocess.STDOUT,
+                                      universal_newlines=True)
+                return op[1]
+            except subprocess.CalledProcessError as cp:
+                if cp.returncode == 1:
+                    continue
+                raise
+        else:
+            raise RuntimeError('Unable to compare "{}" and "{}", according to '
+                               'our logic they are neither greater, equal nor '
+                               'less than each other.')
 
 
 def filter_installed_packages(packages):
